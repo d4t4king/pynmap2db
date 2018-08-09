@@ -72,15 +72,19 @@ def prep_csv_row(nmapHost):
 	row = list()
 	row.append(nmapHost.ipv4)
 	names = ''
-	if len(nmapHost.hostnames) > 1:
-		if 'list' in str(type(nmapHost.hostnames)):
+	if 'list' in str(type(nmapHost.hostnames)):
+		if len(nmapHost.hostnames) > 1:
 			names = ";".join(uniq(nmapHost.hostnames))
-		elif 'str' in str(type(nmapHost.hostnames)):
-			names = nmapHost.hostnames
+		elif len(nmapHost.hostnames) == 1:
+			names = nmapHost.hostnames[0]
 		else:
-			raise Exception("Unrecognized object type: {0}".format(type(nmapHost.hostnames)))
+			names = 'UNRESOLVED'
+			#print("{0} items in list object.".format(len(nmapHost.hostnames)))
+			#exit(1)
 	else:
-		names = nmapHost.hostnames[0]
+		print("Got {0} object type, expected str() or list().".format(type(nmapHost.hostnames)))
+		exit(1)
+
 	row.append(names)
 	os = ''
 	if len(nmapHost.os_match_probabilities()) == 0:
@@ -91,10 +95,11 @@ def prep_csv_row(nmapHost):
 		else:
 			os = nmapHost.os_match_probabilities()
 	#print("OS Obj Type: {0}".format(os))
-	row.append(str(os))
-	if not 'No Matches' in os:
+	if 'NmapOSMatch' in str(type(os)):
+		row.append(os.name)
 		row.append(os.accuracy)
 	else:
+		row.append(os)
 		row.append(0)
 	row.append(nmapHost.status)
 	row.append(sort_ports(nmapHost.get_open_ports()))
