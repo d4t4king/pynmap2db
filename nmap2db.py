@@ -4,7 +4,9 @@ import os
 import csv
 import time
 import pprint
+import sqlite3
 import argparse
+from pathlib import Path
 from libnmap.parser import NmapParser
 
 def check_input(input):
@@ -122,6 +124,32 @@ def prep_csv_row(nmapHost):
 	row.append(nmapHost.scripts_results)
 	
 	return row
+
+def create_table(table, dbfile):
+	tsql = dict()
+	tsql['nmap'] = 'CREATE TABLE nmap (sid INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT, xmlversion TEXT, args TEXT, types TEXT, starttime INTEGER, startstr TEXT, endtime INTEGER, endstr TEXT, numservices INTEGER)'
+	tsql['hosts'] = 'CREATE TABLE hosts (sid INTEGER, hid INTEGER PRIMARY KEY AUTOINCREMENT, ip4 TEXT, ip4num TEXT, hostname TEXT, status TEXT, tcpcount INTEGER, udpcount INTEGER, mac TEXT, vendor TEXT, ip6 TEXT, distance INTEGER, uptime TEXT, upstr TEXT)'
+	tsql['sequencing'] = 'CREATE TABLE sequencing (hid INTEGER, tcpclass TEXT, tcpindex TEXT, tcpvalues TEXT, ipclass TEXT, ipvalues TEXT, tcptclass TEXT, tcptvalues TEXT)'
+	tsql['ports'] = 'CREATE TABLE ports (hid INTEGER, port INTEGER, type TEXT, state TEXT, name TEXT, tunnel TEXT, product TEXT, version TEXT, extra TEXT, confidence INTEGER, method TEXT, proto TEXT, owner TEXT, rpcnum TEXT, fingerprint TEXT)'
+	tsql['os'] = 'CREATE TABLE os(hid INTEGER, name TEXT, family TEXT, generation TEXT, type TEXT, vendor TEXT, accuracy INTEGER)'
+
+	# set up the sqlite connection and create the table
+	conn = sqlite3.connect(dbfile)
+	c = conn.cursor()
+	c.execute(tsql[table])
+	conn.commit()
+	conn.close()
+
+def create_database(_dbfile):
+	dbfile = Path(_dbfile)
+	if dbfile.exists():
+		if dbfile.is_dir():
+			raise("{0} is a directory.  I don't know how to handle those (yet).")
+		elif dbfile.is_file()():
+			raise("File already exists.  Sheepishly refusing to overwrite.")
+	else:
+		for t in [ 'nmap', 'hosts', 'sequencing', 'ports', 'os' ]:
+			create_table(t, _dbfile)
 
 def main():
 	args = handle_args()
