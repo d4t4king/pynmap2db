@@ -5,10 +5,14 @@ import re
 import csv
 import time
 import pprint
+import socket
+import struct
 import sqlite3
 import argparse
+import datetime
 from pathlib import Path
 from libnmap.parser import NmapParser
+from termcolor import cprint,colored
 
 def check_input(input):
 	if os.path.isdir(input):
@@ -163,30 +167,35 @@ def check_scan_record(dbfile, scanargs, starttime, endtime):
 	else:
 		return None
 
-def do_sql(_dbfile, sql):
-	pp = pprint.PrettyPrinter(indent=4)
+# for non-select queries, i.e. queries that don't 
+# return any values
+def do_sql_nonquery(_dbfile, sql):
 	conn = sqlite3.connect(_dbfile)
 	c = conn.cursor()
 	c.execute(sql)
-	match = re.search(r'(insert|update)', sql)
-	if match:
-		return None
-	else:
-		# assume it's a select statement
-		r = c.fetchall()
 	conn.commit()
 	conn.close()
 
-	if r is not None and len(r) > 0:
-		try:
+def do_sql_single(_dbfile, sql):
+	conn = sqlite3.connect(_dbfile)
+	c = conn.cursor()
+	c.execute(sql)
+	r = c.fetchone()
+	conn.close()
+	if r is not None:
+		if 'tuple' in str(type(r)):
+			print("Query returned a tuple. Returning first element.")
 			return r[0]
-		except IndexError as idxerr:
-			print("DEBUG: pprint(r):")
-			pp.pprint(r)
-			raise(idxerr)
+		elif 'str' in str(type(r)):
+			print("Query returned a string.  Returning whole string.")
+			return r
+		else:
+			raise TypeError("Query returned an unexpected type: {0}".format(type(r)))
 	else:
+		# would could jjust return 'r' but let's be pedantically 
+		# clear that we're returning nothing.
 		return None
-
+	
 def get_tcpcount(hostobj):
 	count = -1
 	for tup in hostobj.get_ports():
@@ -200,6 +209,13 @@ def get_udpcount(hostobj):
 		if 'udp' in tup[1]:
 			count += 1
 	return count
+
+def dottedQuadToNum(ip):
+	"""
+		convert decimal dotted quad string to long integer
+		https://www.oreilly.com/library/view/python-cookbook/0596001673/ch10s06.html
+	"""
+	return struct.unpack('>L', socket.inet_aton(ip))[0]
 
 def main():
 	args = handle_args()
@@ -246,43 +262,89 @@ def main():
 	nmap.get_raw_data()['_nmaprun']['xmloutputversion'], nmap.commandline, \
 	nmap.scan_type, nmap.started, nmap.get_raw_data()['_nmaprun']['startstr'], \
 	nmap.endtime, nmap.endtimestr, nmap.get_raw_data()['_scaninfo']['numservices'])
-				do_sql(args.dbfile, sql1)
+				do_sql_nonquery(args.dbfile, sql1)
 				sid = check_scan_record(args.dbfile, nmap.commandline, \
 					nmap.started, nmap.endtime)
 			#print("DEBUG: SID is {0}".format(sid))
 			if len(nmap.hosts) == 0 or nmap.hosts is None:
 				print("There are no hosts in this scan.")
 			else:
+				#pp.pprint(nmap.get_raw_data())
+				#exit(1)
 				for h in nmap.hosts:
+					#pp.pprint(h.get_dict())
+					#print('ipsequence: {0}'.format(h.ipsequence))
+					#print('tcpsequence: {0}'.format(h.tcpsequence))
+					#exit(1)
 					# check if the host is already in the database?
-					hid = do_sql(args.dbfile, "SELECT hid FROM hosts WHERE \
-	ip4='{0}' and sid='{1}'".format(h.address, sid))
+					hid = do_sql_single(args.dbfile, "SELECT hid FROM hosts WHERE \
+	ip4='{0}' and sid='{1}'".format(h.ipv4, sid))
 					print("DEBUG: HID[1]={0}".format(hid))
 					if 'int' in str(type(hid)) and hid > 0:
 						print("Host record exists with hid='{0}'".format(hid))
-						continue
-					if h.hostnames is not None:
-						if 'list' in str(type(h.hostnames)):
-							if len(h.hostnames) > 0:
-								pp.pprint(h.hostnames)
-								hostname = h.hostnames[0]
-							else:
-								hostname = ''
-						else:
-							hostname = h.hostnames
 					else:
-						hostname = ''
-					sql2 = "INSERT INTO hosts (sid, ip4, ip4num, hostname, \
+						if h.hostnames is not None:
+							if 'list' in str(type(h.hostnames)):
+								if len(h.hostnames) > 0:
+									pp.pprint(h.hostnames)
+									hostname = h.hostnames[0]
+								else:
+									hostname = ''
+							else:
+								hostname = h.hostnames
+						else:
+							hostname = ''
+						sql2 = "INSERT INTO hosts (sid, ip4, ip4num, hostname, \
 	status, tcpcount, udpcount, mac, vendor, ip6, distance, uptime, upstr) \
 	VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', \
-	'%s', '%s')" % (sid, h.ipv4, '[ip4num]', hostname, h.status, \
+	'%s', '%s')" % (sid, h.ipv4, dottedQuadToNum(h.ipv4), hostname, h.status, \
 	get_tcpcount(h), get_udpcount(h), h.mac, h.vendor, h.ipv6, h.distance, \
-	h.uptime, 'upstr')
-					do_sql(args.dbfile, sql2)
-					print("Host record inserted.")
-					hid = do_sql(args.dbfile, "SELECT hid FROM hosts WHERE \
+	h.uptime, str(datetime.timedelta(seconds=h.uptime)))
+						do_sql_nonquery(args.dbfile, sql2)
+						print("Host record inserted.")
+						hid = do_sql_single(args.dbfile, "SELECT hid FROM hosts WHERE \
 	ip4='{0}' and sid='{1}'".format(h.address, sid))
-					print("DEBUG: HID[2]={0}".format(hid))
+						print("DEBUG: HID[2]={0}".format(hid))
+					if hid:
+						##################################################
+						# Sequencing infor doesn't seem to be handled by
+						# python-libnmap, nor do I see anything in the
+						# raw XML.  Moving on for now.
+						##################################################
+						for port in h.get_ports():
+							svcdata = h.get_service(port[0], port[1])
+							#cprint("BANNER: {0}".format(svcdata.banner), "green", attrs=['bold'])
+							#cprint("CPEs: {0}".format(svcdata.cpelist), "cyan")
+							pp.pprint(svcdata.service_dict)
+							try:
+								sql3 = "INSERT INTO ports (hid, port, state, \
+	name, tunnel, product, version, proto, owner, fingerprint) VALUES ( \
+	'%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')" % \
+	(hid, port[0], svcdata.state, svcdata.service, svcdata.tunnel, \
+	svcdata.service_dict['product'], svcdata.service_dict['version'], port[1], svcdata.owner, '')
+							except KeyError as keyerr:
+								if 'version' in str(keyerr):
+									try:
+										sql3 = "INSERT INTO ports (hid, port, state, \
+	name, tunnel, product, version, proto, owner, fingerprint) VALUES ( \
+	'%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')" % \
+	(hid, port[0], svcdata.state, svcdata.service, svcdata.tunnel, \
+	svcdata.service_dict['product'], '', port[1], svcdata.owner, '')
+									except KeyError as keyerr2:
+										if 'product' in str(keyerr2):
+											sql3 = "INSERT INTO ports (hid, port, state, \
+	name, tunnel, product, version, proto, owner, fingerprint) VALUES ( \
+	'%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')" % \
+	(hid, port[0], svcdata.state, svcdata.service, svcdata.tunnel, \
+	'', '', port[1], svcdata.owner, '')
+							cprint(sql3, "yellow")
+							do_sql_nonquery(args.dbfile, sql3)
+						###################################################
+						# We probably need more scan data, but it looks like
+						# the python-libnmap module doesn't really capture
+						# OS info.  I will need to try it with other scans 
+						# to be sure.
+						###################################################
 		else:
 			raise Exception("Unknown format: {0}".format(args.format))
 		
